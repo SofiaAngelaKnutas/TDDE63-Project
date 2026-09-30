@@ -1,3 +1,14 @@
+"""
+Jamming defense simulation.
+
+Run with defaults:
+    python Simulator_jamming.py
+Choose settings:
+    python Simulator_jamming.py --eve-antennas 4 --bob-tx-antennas 3 --strategy nullspace
+See all options:
+    python Simulator_jamming.py --help
+"""
+import argparse
 import numpy as np
 from Classes.MarkovChain import MarkovChain
 from Classes.Encoder import Encoder
@@ -15,8 +26,10 @@ P = np.array([
 ])
 
 
-def run(jam_power=0.0, jam_fraction=1.0, eve_receiver="mrc", eve_antennas=2,
-        eve_learns_from="true_states", T=5000, seed=42):
+def run(jam_power=0.0, jam_fraction=1.0, bob_tx_antennas=1, bob_rx_antennas=1,
+        strategy="isotropic", eve_antennas=2, eve_receiver="mrc",
+        eve_learns_from="true_states", Ps=10.0, rho=0.05, threshold=1.0,
+        T=5000, seed=42):
     """
     eve_learns_from:
       "true_states"   - as in main: true states become public after each step,
@@ -27,12 +40,16 @@ def run(jam_power=0.0, jam_fraction=1.0, eve_receiver="mrc", eve_antennas=2,
     chain = MarkovChain(states, P, rng=np.random.default_rng(seed))
     encoder = Encoder()
 
-    # ---- DEFENSE: one jammer shared by both channels ----
-    jammer = Jammer(power=jam_power, jam_fraction=jam_fraction, rng=rng)
-    bob_channel = JammingChannel("bob", jammer, noise_std=0.4, rng=rng)
-    eve_channel = JammingChannel("eve", jammer, n_antennas=eve_antennas,
-                                 eve_receiver=eve_receiver, noise_std=0.8, rng=rng)
-    # -----------------------------------------------------
+    # ---- DEFENSE: Bob's full-duplex jammer, shared by both channels ----
+    jammer = Jammer(power=jam_power, jam_fraction=jam_fraction,
+                    tx_antennas=bob_tx_antennas, rx_antennas=bob_rx_antennas,
+                    strategy=strategy, rng=rng)
+    bob_channel = JammingChannel("bob", jammer, Ps=Ps, threshold=threshold,
+                                 rho=rho, noise_std=0.4, rng=rng)
+    eve_channel = JammingChannel("eve", jammer, Ps=Ps, threshold=threshold,
+                                 n_antennas=eve_antennas, eve_receiver=eve_receiver,
+                                 noise_std=0.8, rng=rng)
+    # --------------------------------------------------------------------
 
     trajectory = chain.sample(T=T, start_state=0)
     bob_decoder = Decoder(P, states, encoder, bob_channel.noise_std)
@@ -41,7 +58,7 @@ def run(jam_power=0.0, jam_fraction=1.0, eve_receiver="mrc", eve_antennas=2,
 
     bob_pred, eve_pred = [], []
     for t in range(T):
-        jammer.step()  # Bob decides whether he jams this timestep
+        jammer.step()  # Bob decides whether he jams + new channel realisation
 
         encoded = encoder.encode(states[trajectory[t]])
         bob_received = bob_channel.transmit(encoded)
@@ -66,12 +83,38 @@ def run(jam_power=0.0, jam_fraction=1.0, eve_receiver="mrc", eve_antennas=2,
     }
 
 
-if __name__ == "__main__":
-    print(f"{'Eve learns from':<15} {'Eve rx':<5} {'jam':>5} | {'Bob acc':>7} {'Eve acc':>7} {'||P-P_eve||':>11}")
-    print("-" * 62)
+def main():
+    p = argparse.ArgumentParser(description="Receiver jamming defense simulation")
+    p.add_argument("--eve-antennas", type=int, default=2, help="Eve's antennas (Me)")
+    p.add_argument("--bob-tx-antennas", type=int, default=1, help="Bob's jamming antennas (Mt)")
+    p.add_argument("--bob-rx-antennas", type=int, default=1, help="Bob's receive antennas (Mr)")
+    p.add_argument("--strategy", choices=["isotropic", "nullspace"], default="isotropic",
+                   help="how Bob spreads the jamming (nullspace needs Mt >= 2)")
+    p.add_argument("--jam-powers", type=float, nargs="+", default=[0.0, 10.0, 100.0],
+                   help="jamming powers to compare")
+    p.add_argument("--jam-fraction", type=float, default=1.0, help="share of timesteps Bob jams")
+    p.add_argument("--Ps", type=float, default=10.0, help="Alice's transmit power")
+    p.add_argument("--rho", type=float, default=0.05, help="self-interference level at Bob (0-1)")
+    p.add_argument("--threshold", type=float, default=1.0, help="min SINR to decode a packet")
+    p.add_argument("--T", type=int, default=5000, help="timesteps per run")
+    a = p.parse_args()
+
+    print(f"Eve antennas={a.eve_antennas}, Bob jam antennas={a.bob_tx_antennas}, "
+          f"Bob rx antennas={a.bob_rx_antennas}, strategy={a.strategy}, "
+          f"jam_fraction={a.jam_fraction}, Ps={a.Ps}, rho={a.rho}, T={a.T}\n")
+    print(f"{'Eve learns from':<15} {'Eve rx':<6} {'jam':>6} | {'Bob acc':>7} {'Eve acc':>7} {'||P-P_eve||':>11}")
+    print("-" * 64)
     for learns in ("true_states", "own_estimates"):
         for receiver in ("mrc", "mmse"):
-            for pd in (0.0, 10.0, 100.0):
-                r = run(jam_power=pd, eve_receiver=receiver, eve_learns_from=learns)
-                print(f"{learns:<15} {receiver:<5} {pd:>5} | "
+            for pd in a.jam_powers:
+                r = run(jam_power=pd, jam_fraction=a.jam_fraction,
+                        bob_tx_antennas=a.bob_tx_antennas, bob_rx_antennas=a.bob_rx_antennas,
+                        strategy=a.strategy, eve_antennas=a.eve_antennas,
+                        eve_receiver=receiver, eve_learns_from=learns,
+                        Ps=a.Ps, rho=a.rho, threshold=a.threshold, T=a.T)
+                print(f"{learns:<15} {receiver:<6} {pd:>6g} | "
                       f"{r['bob_acc']:>7.3f} {r['eve_acc']:>7.3f} {r['P_error']:>11.3f}")
+
+
+if __name__ == "__main__":
+    main()
