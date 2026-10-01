@@ -1,0 +1,23 @@
+Baseline:
+Simulation time: 11.98 seconds
+Sequence length (T): 1,000,000
+Packets sent by Alice: 929,998
+Bob packets lost: 46,503
+Eve packets lost: 232,762
+Bob public Y accuracy: 0.9525
+Bob private S accuracy: 0.9658
+Bob joint (Y + S) accuracy: 0.9353
+Eve S accuracy: 0.8810
+Average CRA: 0.0984
+
+With defense:
+Simulation time: 10.24 seconds
+Sequence length (T): 1,000,000
+Packets sent by Alice: 550,039
+Bob packets lost: 27,244
+Eve packets lost: 137,321
+Bob public Y accuracy: 0.9762
+Bob private S accuracy: 0.9855
+Bob joint (Y + S) accuracy: 0.9689
+Eve S accuracy: 0.6813
+Average CRA: 0.3122
