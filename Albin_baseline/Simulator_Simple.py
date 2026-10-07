@@ -2,7 +2,7 @@ import numpy as np
 from Classes.MarkovChain import MarkovChain
 from Classes.Channel import Channel
 from Classes.Decoder import Decoder, HMMDecoder
-from Classes.Sender import Sender
+from Classes.Sender import Sender, Sender_Filip
 from Classes.EveLearner import RandomForestEve
 from Classes.TrainEve import RandomForest_Trainer
 import time
@@ -17,10 +17,10 @@ PRETRAINED_MODEL = None #Set to None if we want to train new, otherwise the file
 #PRETRAINED_MODEL = "eve_random_forest.joblib"
 
 # Ignore these if using pretrained model:
-MODEL_NAME = "new_test_model" + ".joblib"
+MODEL_NAME = "RF_NewSimplified_Filipmodel_Window4_Bob005_Eve025" + ".joblib"
 TRAINING_RUNS = 5
 T_PER_RUN = 20_000
-WINDOW_SIZE = 5
+WINDOW_SIZE = 4
 OBSERVATION_SIZE = 2       # baseline cleartext packet = [Y, S], might need to change depending on defense method.
 
 #
@@ -49,7 +49,15 @@ bob_rng = np.random.default_rng(44)
 eve_rng = np.random.default_rng(45)
 
 chain = MarkovChain(states=states, transition_matrix=P, rng=source_rng)
-sender = Sender(
+
+#sender = Sender(
+#    sending_probability=SENDING_PROBABILITY,
+#    rng=sender_rng
+#)
+
+sender = Sender_Filip(
+    states=states,
+    transition_matrix=P,
     sending_probability=SENDING_PROBABILITY,
     rng=sender_rng
 )
@@ -60,69 +68,76 @@ eve_channel = Channel(packet_loss=EVE_PACKET_LOSS, rng=eve_rng)
 bob_decoder = HMMDecoder(states=states, transition_matrix=P)
 
 if PRETRAINED_MODEL is None:
+
+    training_sender = Sender_Filip(
+        states=states,
+        transition_matrix=P,
+        sending_probability=SENDING_PROBABILITY,
+        rng=np.random.default_rng(1337)
+    )
+    
     eve_trainer = RandomForest_Trainer(
-        model_name = MODEL_NAME,
-        states = states,
-        P = P,
+        model_name=MODEL_NAME,
+        states=states,
+        P=P,
         training_runs=TRAINING_RUNS,
         T_per_run=T_PER_RUN,
         window_size=WINDOW_SIZE,
         observation_size=OBSERVATION_SIZE,
-        sending_probability=SENDING_PROBABILITY,
-        eve_packet_loss=EVE_PACKET_LOSS
+        eve_packet_loss=EVE_PACKET_LOSS,
+        sender=training_sender,
     )
 
     eve_trainer.train()
     eve_decoder = RandomForestEve(
-        model_path=Path("Models") / MODEL_NAME
+        model_path=Path("TempModels") / MODEL_NAME
     )
     
 else:
     eve_decoder = RandomForestEve(
-        model_path=Path("Models") / PRETRAINED_MODEL
+        model_path=Path("TempModels") / PRETRAINED_MODEL
     )
 
 state_history = chain.sample(T=T,start_state=0)
 
-bob_prediction_Y = []
 bob_prediction_S = []
+bob_prediction_Y = []
 
 eve_feature_rows = []
 eve_had_current_packet = []
 
 for t in range(T):
-    true_index = state_history[t]   #e.g. "3" which corresponds to (1, 1)
-    true_state = states[true_index] #e.g. true_index = 3 gives us (1, 1)
+    true_index = state_history[t]
+    true_state = states[true_index]
     true_y, true_s = true_state
 
     sent_packet = sender.transmit(true_state)
 
-    # Bob and Eve receive through different channels
     bob_received = bob_channel.observe(sent_packet)
     eve_received = eve_channel.observe(sent_packet)
 
+    # Bob
     bob_y, bob_s = bob_decoder.observe(bob_received)
+
     bob_prediction_Y.append(bob_y)
     bob_prediction_S.append(bob_s)
 
-    eve_feature_rows.append(
-        eve_decoder.features_for_current(eve_received)
-    )
+    # Eve
+    features = eve_decoder.observe(eve_received)
+    eve_feature_rows.append(features)
 
-    #This is just an array with True/False for result statistics later...
     eve_had_current_packet.append(eve_received is not None)
 
-    eve_decoder.reveal_y(
-        revealed_y=true_y,
-        observation=eve_received,
-    )
     progress = (t + 1) / T * 100
     print(f"\rProgress: {progress:.1f}%", end="", flush=True)
 
-eve_S = eve_decoder.predict_features(np.asarray(eve_feature_rows))
-
 print()
 print("Simulation time: ", time.perf_counter() - start)
+
+#Train all in one batch
+eve_S = eve_decoder.predict(
+    np.asarray(eve_feature_rows)
+)
 
 # Results:
 
@@ -146,7 +161,7 @@ print("Eve S accuracy:", np.mean(eve_S == true_S))
 print("Average CRA:", np.mean(CRA))
 
 # ~ is invert function. Basically, look at where Eve had no packet; 
-# What were her accuracy then (so when the RF-model actually did some work)
+# What was her accuracy then (so when the RF-model actually did some work)
 hidden_mask = ~eve_had_current_packet
 if np.any(hidden_mask):
     print(
