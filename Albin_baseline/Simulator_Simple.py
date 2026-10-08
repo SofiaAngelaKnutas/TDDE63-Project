@@ -2,7 +2,7 @@ import numpy as np
 from Classes.MarkovChain import MarkovChain
 from Classes.Channel import Channel
 from Classes.Decoder import Decoder, HMMDecoder
-from Classes.Sender import Sender, Sender_Filip
+from Classes.Sender import Sender, Sender_Filip, Sofia_Random_Sender
 from Classes.EveLearner import RandomForestEve
 from Classes.TrainEve import RandomForest_Trainer
 import time
@@ -17,7 +17,7 @@ PRETRAINED_MODEL = None #Set to None if we want to train new, otherwise the file
 #PRETRAINED_MODEL = "eve_random_forest.joblib"
 
 # Ignore these if using pretrained model:
-MODEL_NAME = "RF_NewSimplified_Filipmodel_Window4_Bob005_Eve025" + ".joblib"
+MODEL_NAME = "RF_SofiaSender_Theta0.8_Window4_Bob005_Eve025" + ".joblib"
 TRAINING_RUNS = 5
 T_PER_RUN = 20_000
 WINDOW_SIZE = 4
@@ -28,6 +28,8 @@ SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
 BOB_PACKET_LOSS = 0.05
 EVE_PACKET_LOSS = 0.25
 T = 100_000
+
+THETA = 0.8
 
 states = np.array([
     [0, 0],
@@ -55,25 +57,30 @@ chain = MarkovChain(states=states, transition_matrix=P, rng=source_rng)
 #    rng=sender_rng
 #)
 
-sender = Sender_Filip(
+#sender = Sender_Filip(
+#    states=states,
+#    transition_matrix=P,
+#    sending_probability=SENDING_PROBABILITY,
+#    rng=sender_rng
+#)
+
+sender = Sofia_Random_Sender(
+    theta=THETA,
     states=states,
-    transition_matrix=P,
-    sending_probability=SENDING_PROBABILITY,
     rng=sender_rng
 )
 
 bob_channel = Channel(packet_loss=BOB_PACKET_LOSS, rng=bob_rng)
 eve_channel = Channel(packet_loss=EVE_PACKET_LOSS, rng=eve_rng)
 
-bob_decoder = HMMDecoder(states=states, transition_matrix=P)
+bob_decoder = HMMDecoder(states=states, transition_matrix=P, theta=THETA)
 
 if PRETRAINED_MODEL is None:
 
-    training_sender = Sender_Filip(
+    training_sender = Sofia_Random_Sender(
+        theta=THETA,
         states=states,
-        transition_matrix=P,
-        sending_probability=SENDING_PROBABILITY,
-        rng=np.random.default_rng(1337)
+        rng=sender_rng
     )
     
     eve_trainer = RandomForest_Trainer(

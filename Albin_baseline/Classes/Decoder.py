@@ -19,7 +19,7 @@ class Decoder:
             return received_packet
 
 class HMMDecoder:
-    def __init__(self, states, transition_matrix):
+    def __init__(self, states, transition_matrix, theta):
         self.states = np.asarray(states)
         self.P = np.asarray(transition_matrix, dtype=float)
 
@@ -28,6 +28,8 @@ class HMMDecoder:
         self.belief[0] = 1.0
 
         self.first_slot = True
+
+        self.theta = theta
 
     def observe(self, received_packet):
         # STEP 1: Predict current state
@@ -46,10 +48,20 @@ class HMMDecoder:
             # Missing packet provides no new state information
             likelihood = np.ones(len(self.states))
         else:
-            # Perfect reception: only matching state is possible
-            likelihood = np.all(
-                self.states == received_packet, axis=1
-            ).astype(float)
+            n_states = len(self.states)
+            random_probability = (1 - self.theta) / n_states
+
+            likelihood = np.full(
+                n_states,
+                random_probability
+            )
+            
+            matches = np.all(
+                self.states == received_packet,
+                axis=1
+            )
+
+            likelihood[matches] += self.theta
 
         # STEP 3: Bayesian update (Basically: (what markov said) * (what the received packet said))
         posterior = prior * likelihood

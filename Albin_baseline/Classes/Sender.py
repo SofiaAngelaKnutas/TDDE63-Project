@@ -40,3 +40,34 @@ class Sender_Filip:
             return None
 
         return packet
+
+class Sofia_Random_Sender:
+    """
+    Randomized response defense, WITHOUT key.
+
+    With probability theta, Alice sends the real state.
+    Otherwise, she sends a random state (all states equally likely).
+
+    theta      : probability of sending the real state (0 to 1)
+    states     : all current possible states
+    rng        : random number generator, e.g. np.random.default_rng(45)
+
+    Returns the index of the state Alice actually sends.
+    """
+    def __init__(self, theta, states, rng):
+        self.theta = theta
+        self.states = states
+        self.rng = rng or np.random.default_rng()
+
+    def transmit(self, packet):
+
+        send_real_state = self.rng.random() < self.theta
+
+        if send_real_state:
+            return packet
+        else:
+            random_index = self.rng.integers(len(self.states)) #A random state
+            return self.states[random_index].copy()
+
+    
+        
