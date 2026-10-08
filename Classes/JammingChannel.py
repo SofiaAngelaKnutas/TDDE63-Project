@@ -55,9 +55,11 @@ class Jammer:
             self.Q = self.power / (self.Mt - 1) * W @ W.conj().T
 
 
-# Eve is the same fixed attacker in every simulation: one antenna, and she is
-# unaware of the jamming (MRC receiver, the main assumption in Zheng et al.).
-EVE_ANTENNAS = 1
+# Eve's hardware is the same in every simulation. Two antennas are needed for the
+# aware (MMSE) Eve to be able to suppress jamming at all: with one antenna, MMSE
+# and MRC give exactly the same SINR.
+EVE_ANTENNAS = 2
+EVE_RECEIVERS = ("mrc", "mmse")
 
 
 class JammingChannel:
@@ -66,15 +68,19 @@ class JammingChannel:
     is lost when the SINR falls below `threshold`.
 
     role="bob": SINR from paper eq. 3 (self-interference scaled by rho)
-    role="eve": MRC receiver that ignores the jamming (paper eq. 3),
-                with EVE_ANTENNAS antennas (fixed, not a parameter).
+    role="eve": EVE_ANTENNAS antennas (fixed), with one of two receivers:
+                "mrc"  - unaware of the jamming, treats it as noise (paper eq. 3)
+                "mmse" - knows about the jamming and suppresses it (paper eq. 41)
     """
 
     def __init__(self, role, jammer, Ps=10.0, threshold=1.0, rho=0.05,
-                 noise_std=0.0, rng=None):
+                 eve_receiver="mrc", noise_std=0.0, rng=None):
         if role not in ("bob", "eve"):
             raise ValueError("role must be 'bob' or 'eve'")
+        if eve_receiver not in EVE_RECEIVERS:
+            raise ValueError(f"eve_receiver must be one of {EVE_RECEIVERS}")
         self.role = role
+        self.eve_receiver = eve_receiver
         self.jammer = jammer
         self.Ps = Ps
         self.threshold = threshold
@@ -91,7 +97,9 @@ class JammingChannel:
         h_se = _cn(self.rng, EVE_ANTENNAS)                    # Alice -> Eve
         H_ed = _cn(self.rng, EVE_ANTENNAS, j.Mt)              # Bob's jammer -> Eve
         J = H_ed @ j.Q @ H_ed.conj().T                        # jamming Eve receives
-        g = np.linalg.norm(h_se) ** 2                         # MRC: Eve ignores the jamming
+        if self.eve_receiver == "mmse":                       # aware Eve suppresses the jamming
+            return self.Ps * np.real(h_se.conj() @ np.linalg.solve(J + np.eye(EVE_ANTENNAS), h_se))
+        g = np.linalg.norm(h_se) ** 2                         # unaware Eve: MRC, jamming = noise
         return self.Ps * g / (1 + np.real(h_se.conj() @ J @ h_se) / g)
 
     def received(self):
