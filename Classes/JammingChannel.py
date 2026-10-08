@@ -55,29 +55,30 @@ class Jammer:
             self.Q = self.power / (self.Mt - 1) * W @ W.conj().T
 
 
+# Eve is the same fixed attacker in every simulation: one antenna, and she is
+# unaware of the jamming (MRC receiver, the main assumption in Zheng et al.).
+EVE_ANTENNAS = 1
+
+
 class JammingChannel:
     """
     Drop-in replacement for Channel. Instead of a fixed packet_loss, a packet
     is lost when the SINR falls below `threshold`.
 
     role="bob": SINR from paper eq. 3 (self-interference scaled by rho)
-    role="eve": naive MRC receiver (eq. 3) or smart MMSE receiver (eq. 41),
-                with n_antennas (Me) antennas.
+    role="eve": MRC receiver that ignores the jamming (paper eq. 3),
+                with EVE_ANTENNAS antennas (fixed, not a parameter).
     """
 
     def __init__(self, role, jammer, Ps=10.0, threshold=1.0, rho=0.05,
-                 n_antennas=1, eve_receiver="mrc", noise_std=0.0, rng=None):
+                 noise_std=0.0, rng=None):
         if role not in ("bob", "eve"):
             raise ValueError("role must be 'bob' or 'eve'")
-        if eve_receiver not in ("mrc", "mmse"):
-            raise ValueError("eve_receiver must be 'mrc' or 'mmse'")
         self.role = role
         self.jammer = jammer
         self.Ps = Ps
         self.threshold = threshold
         self.rho = rho
-        self.n_antennas = n_antennas
-        self.eve_receiver = eve_receiver
         self.noise_std = noise_std  # kept so Decoder(observation_noise_std=...) still works
         self.rng = rng or np.random.default_rng()
 
@@ -87,12 +88,10 @@ class JammingChannel:
             self_interference = np.real(j.r.conj() @ j.H_loop @ j.Q @ j.H_loop.conj().T @ j.r)
             return self.Ps * np.linalg.norm(j.h_sd) ** 2 / (1 + self.rho * self_interference)
 
-        h_se = _cn(self.rng, self.n_antennas)                 # Alice -> Eve
-        H_ed = _cn(self.rng, self.n_antennas, j.Mt)           # Bob's jammer -> Eve
+        h_se = _cn(self.rng, EVE_ANTENNAS)                    # Alice -> Eve
+        H_ed = _cn(self.rng, EVE_ANTENNAS, j.Mt)              # Bob's jammer -> Eve
         J = H_ed @ j.Q @ H_ed.conj().T                        # jamming Eve receives
-        if self.eve_receiver == "mmse":                       # Eve suppresses the jamming
-            return self.Ps * np.real(h_se.conj() @ np.linalg.solve(J + np.eye(self.n_antennas), h_se))
-        g = np.linalg.norm(h_se) ** 2                         # naive MRC: ignores the jamming
+        g = np.linalg.norm(h_se) ** 2                         # MRC: Eve ignores the jamming
         return self.Ps * g / (1 + np.real(h_se.conj() @ J @ h_se) / g)
 
     def received(self):
