@@ -1,42 +1,37 @@
 """
-Receiver jamming defense, run against the group's ML Eve.
+Receiver jamming defense (idea from Zheng et al., IEEE TSP 2013).
 
-Same setup as Simulator_Simple.py, except the channels: Bob sends jamming noise
-while he receives. Every packet's bits are turned into numbers (0 -> -1, 1 -> +1),
-noise is added, and the receiver turns them back into bits. Eve gets the full
-noise, Bob only a small leak, so Eve receives many wrong states and Bob few.
+The defense itself is in Classes/JammingChannel.py: it calculates the chance
+that a packet gets through to Bob and to Eve when Bob jams. Jamming lowers
+Eve's chance a lot, and Bob's only a little (the part of his own jamming he
+cannot cancel). This file tests it for several jamming strengths.
 
-Bob uses Albin's HMMDecoder unchanged: he trusts every packet he receives. If a
-packet is impossible (only happens at the very first step, when Bob knows the
-chain starts in state 0), he ignores it, as if it never arrived.
-Eve is trained the same way as in TrainEve.py (same window, same random forest),
-but on traffic that already has the jamming in it, so she knows the defense.
+Everything else is Albin's baseline: Alice sends every state, Bob uses the HMM
+decoder, Eve is the random forest. Eve is trained with the same jamming, so she
+knows about the defense.
 
 Run from inside the Albin_baseline folder:
     python Simulator_Jamming.py
 """
-import warnings
+from pathlib import Path
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
 
 from Classes.MarkovChain import MarkovChain
+from Classes.Channel import Channel
 from Classes.Decoder import HMMDecoder
 from Classes.Sender import Sender
-from Classes.EveLearner import ObservationWindow
-from Classes.JammingChannel import JammingChannel
-
-warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+from Classes.EveLearner import RandomForestEve
+from Classes.TrainEve import RandomForest_Trainer
+from Classes.JammingChannel import jamming_probabilities
 
 #############################################
 ########### Tweak variables here: ###########
 #############################################
-JAM_NOISE = [0.0, 0.5, 1.0, 2.0, 4.0]   # strength of Bob's jamming noise (0 = no jamming)
-SELF_INTERFERENCE = 0.1                 # share of the noise power that leaks into Bob
+JAM_POWERS = [0, 1, 3, 10, 30]  # how strong Bob's jamming is (0 = no jamming)
+SELF_INTERFERENCE = 0.1         # share of Bob's jamming he can NOT cancel (0 = perfect)
 
 # Same as Simulator_Simple.py:
-BOB_PACKET_LOSS = 0.05
-EVE_PACKET_LOSS = 0.25
 TRAINING_RUNS = 5
 T_PER_RUN = 20_000
 WINDOW_SIZE = 4
@@ -58,67 +53,52 @@ P = np.array([
 ])
 
 
-def train_eve(jam_noise):
-    """Train Eve like TrainEve.py, but on Eve's jammed channel."""
-    master_rng = np.random.default_rng(1000)
-    X_train, y_train = [], []
-    for _ in range(TRAINING_RUNS):
-        chain = MarkovChain(states, P, rng=np.random.default_rng(master_rng.integers(2**32)))
-        eve_channel = JammingChannel(EVE_PACKET_LOSS, jam_noise, leak=1.0,
-                                     rng=np.random.default_rng(master_rng.integers(2**32)))
-        sender = Sender(sending_probability=1.0, rng=np.random.default_rng(1337))
-        window = ObservationWindow(window_size=WINDOW_SIZE, observation_size=OBSERVATION_SIZE)
-        state_history = chain.sample(T=T_PER_RUN, start_state=0)
-        for t in range(T_PER_RUN):
-            true_state = states[state_history[t]]
-            eve_received = eve_channel.observe(sender.transmit(true_state))
-            X_train.append(window.features(eve_received))
-            y_train.append(int(true_state[1]))       # label: the private attribute S
-            window.update(eve_received)
-    model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-    model.fit(np.asarray(X_train, dtype=float), np.asarray(y_train, dtype=int))
-    return model
+def run(jam_power):
+    # 1. Calculate the chances and make the two channels
+    p_ab, p_ae = jamming_probabilities(jam_power, SELF_INTERFERENCE)   # THE DEFENSE
+    bob_channel = Channel(packet_loss=1 - p_ab, rng=np.random.default_rng(44))
+    eve_channel = Channel(packet_loss=1 - p_ae, rng=np.random.default_rng(45))
 
+    # 2. Train Eve on traffic with the same jamming (Albin's trainer)
+    model_name = f"RF_Jamming_{jam_power}.joblib"
+    RandomForest_Trainer(
+        model_name=model_name, states=states, P=P,
+        training_runs=TRAINING_RUNS, T_per_run=T_PER_RUN,
+        window_size=WINDOW_SIZE, observation_size=OBSERVATION_SIZE,
+        eve_packet_loss=1 - p_ae,
+        sender=Sender(sending_probability=1.0, rng=np.random.default_rng(1337)),
+    ).train()
+    eve = RandomForestEve(model_path=Path("TempModels") / model_name)
 
-def bob_observe(decoder, packet):
-    """Albin's HMMDecoder, but an impossible packet is treated as a missing one."""
-    first_slot = decoder.first_slot
-    try:
-        return decoder.observe(packet)
-    except ValueError:                   # noise turned it into a state Bob knows is impossible
-        decoder.first_slot = first_slot
-        return decoder.observe(None)
-
-
-def run(jam_noise):
-    bob_channel = JammingChannel(BOB_PACKET_LOSS, jam_noise, leak=SELF_INTERFERENCE,
-                                 rng=np.random.default_rng(44))
-    eve_channel = JammingChannel(EVE_PACKET_LOSS, jam_noise, leak=1.0,
-                                 rng=np.random.default_rng(45))
-
-    eve_model = train_eve(jam_noise)
-    eve_window = ObservationWindow(window_size=WINDOW_SIZE, observation_size=OBSERVATION_SIZE)
-    bob_decoder = HMMDecoder(states=states, transition_matrix=P)
-
-    chain = MarkovChain(states=states, transition_matrix=P, rng=np.random.default_rng(42))
+    # 3. Alice, Bob and the true states
     sender = Sender(sending_probability=1.0, rng=np.random.default_rng(43))
+    bob = HMMDecoder(states=states, transition_matrix=P)
+    chain = MarkovChain(states=states, transition_matrix=P, rng=np.random.default_rng(42))
     state_history = chain.sample(T=T, start_state=0)
 
-    bob_predictions, eve_feature_rows = [], []
+    # 4. Send T packets
+    bob_guesses, eve_features, bob_got, eve_got = [], [], [], []
     for t in range(T):
-        sent_packet = sender.transmit(states[state_history[t]])
-        bob_predictions.append(bob_observe(bob_decoder, bob_channel.observe(sent_packet)))
-        eve_received = eve_channel.observe(sent_packet)
-        eve_feature_rows.append(eve_window.features(eve_received))
-        eve_window.update(eve_received)
+        packet = sender.transmit(states[state_history[t]])
+        bob_received = bob_channel.observe(packet)
+        eve_received = eve_channel.observe(packet)
 
-    eve_S = eve_model.predict(np.asarray(eve_feature_rows, dtype=float))
+        bob_guesses.append(bob.observe(bob_received))
+        eve_features.append(eve.observe(eve_received))
+        bob_got.append(bob_received is not None)
+        eve_got.append(eve_received is not None)
+
+    # 5. Grade Bob and Eve against the true states
     true_states = states[state_history]
-    bob_correct = np.all(np.array(bob_predictions) == true_states, axis=1)
+    eve_S = eve.predict(np.asarray(eve_features))
+    bob_correct = np.all(np.array(bob_guesses) == true_states, axis=1)
     eve_wrong = eve_S != true_states[:, 1]
+    bob_got, eve_got = np.array(bob_got), np.array(eve_got)
+
     return {
-        "bob_bit_err": bob_channel.bit_error_prob,
-        "eve_bit_err": eve_channel.bit_error_prob,
+        "P_AB": p_ab,
+        "P_AE": p_ae,
+        "B_and_not_E": np.mean(bob_got & ~eve_got),   # Bob got it AND Eve did not
         "bob_acc": np.mean(bob_correct),
         "eve_S_acc": 1 - np.mean(eve_wrong),
         "CRA": np.mean(bob_correct & eve_wrong),
@@ -126,11 +106,11 @@ def run(jam_noise):
 
 
 if __name__ == "__main__":
-    print(f"Packet loss without jamming: Bob {BOB_PACKET_LOSS}, Eve {EVE_PACKET_LOSS}. "
-          f"Self-interference at Bob: {SELF_INTERFERENCE}\n")
-    print(f"{'noise':>5} | {'Bob bit err':>11} {'Eve bit err':>11} | {'Bob acc':>7} {'Eve S acc':>9} {'CRA':>6}")
-    print("-" * 62)
-    for noise in JAM_NOISE:
-        r = run(noise)
-        print(f"{noise:>5} | {r['bob_bit_err']:>11.3f} {r['eve_bit_err']:>11.3f} | "
+    results = {jam: run(jam) for jam in JAM_POWERS}
+    print()
+    print(f"{'jam':>4} | {'P_AB':>5} {'P_AE':>5} | {'Bob yes, Eve no':>15} | "
+          f"{'Bob acc':>7} {'Eve S acc':>9} {'CRA':>6}")
+    print("-" * 64)
+    for jam, r in results.items():
+        print(f"{jam:>4} | {r['P_AB']:>5.3f} {r['P_AE']:>5.3f} | {r['B_and_not_E']:>15.3f} | "
               f"{r['bob_acc']:>7.3f} {r['eve_S_acc']:>9.3f} {r['CRA']:>6.3f}")
