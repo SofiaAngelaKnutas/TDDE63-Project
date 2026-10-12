@@ -144,8 +144,8 @@ class HMMDecoderAlbin:
         self.first_slot = True
 
         self.Bob_window_size = Bob_window_size
-        self.BobWindow = deque(
-            0 * (self.Bob_window_size),
+        self.Bob_window = deque(
+            [0] * (self.Bob_window_size),
             maxlen=Bob_window_size,
         )
 
@@ -156,6 +156,7 @@ class HMMDecoderAlbin:
 
     def observe(self, received_packet):
         # STEP 1: Predict current state
+        ACK = False
 
         if self.first_slot:
             # At t=0, source is already in initial state.
@@ -170,17 +171,18 @@ class HMMDecoderAlbin:
         if received_packet is None:
             # Missing packet provides no new state information
             likelihood = np.ones(len(self.states))
+            self.Bob_window.appendleft(0)
+            ACK = False
         else:
             # Perfect reception: Decode the state then update likelihood + window + ACK
             current_idx = self.state_to_idx[tuple(received_packet)]
-            sum = current_idx + sum(
-                    value if i % 2 == 0 else -value #+ - + - ...
-                    for i, value in enumerate(self.Bob_window_size)
-                )
+            history_sum = sum(self.Bob_window)
+            decoded_packet = (current_idx + history_sum) % len(self.states)
 
-            likelihood = np.all(
-                self.states == received_packet, axis=1
-            ).astype(float)
+            likelihood = np.zeros(len(self.states))
+            likelihood[decoded_packet] = 1.0
+            self.Bob_window.appendleft(decoded_packet)
+            ACK = True
 
         # STEP 3: Bayesian update (Basically: (what markov said) * (what the received packet said))
         posterior = prior * likelihood
@@ -194,4 +196,4 @@ class HMMDecoderAlbin:
         # STEP 4: Return most probable state (MAP)
         estimated_index = np.argmax(self.belief)
 
-        return self.states[estimated_index].copy()
+        return self.states[estimated_index].copy(), ACK

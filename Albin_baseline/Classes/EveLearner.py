@@ -42,6 +42,68 @@ class ObservationWindow:
         if self.window_size > 1:
             self.history.append(observation)
 
+class ObservationWindowACK:
+    def __init__(self, window_size=3, observation_size=2):
+        self.window_size = window_size
+        self.observation_size = observation_size
+
+        """
+        Each history entry is:
+        (Eve observation, Bob's ACK/NACK for that packet)
+
+        ACK:
+        1 = Bob Received
+        0 = Bob Missed
+        -1 = No slot exists yet. (We do not know at this stage if ACK or NACK)
+        """
+        self.history = deque(
+            [(None, -1)] * (window_size - 1),
+            maxlen=window_size - 1,
+        )
+
+    #Sometimes we send "None" packets. Random Forest cannot interpret "None", so we transform to [-1, -1]
+    def _encode(self, observation, ack):
+        if observation is None:
+            observation = np.full(
+                self.observation_size,
+                -1.0
+        )
+        else:
+            observation = np.asarray(
+                observation,
+                dtype=float
+            ).reshape(-1)
+
+        if observation.size != self.observation_size:
+            raise ValueError(
+                f"Expected observation size {self.observation_size}, "
+                f"got {observation.size}"
+            )
+
+        return np.concatenate([
+            observation,
+            [float(ack)]
+        ])
+
+    def features(self, current_observation):
+        records = [
+            self._encode(observation, ack)
+            for observation, ack in self.history
+        ]
+
+        # Current ACK/NACK is not known yet. -1 as ACK
+        records.append(
+            self._encode(current_observation, -1)
+        )
+
+        return np.concatenate(records)
+
+    def update(self, observation, ACK):
+        if self.window_size > 1:
+            self.history.append(
+                (observation, 1 if ACK else 0)
+            )
+
 
 class RandomForestEve:
     def __init__(self, model_path):
@@ -62,6 +124,35 @@ class RandomForestEve:
         features = self.window.features(observation)
 
         self.window.update(observation)
+
+        return features
+
+    def predict(self, features):
+        features = np.asarray(features, dtype=float)
+
+        return self.model.predict(features).astype(int)
+
+class RandomForestEveACK:
+    def __init__(self, model_path):
+        saved = joblib.load(model_path)
+
+        self.model = saved["model"]
+
+        self.window = ObservationWindowACK( #We dont need to load this, but could possibly prevent some accident :)
+            window_size=saved["window_size"],
+            observation_size=saved["observation_size"],
+        )
+
+    def observe(self, observation, ACK):
+        """
+        Build feature row from current observation,
+        then update Eve's observation history.
+        """
+        #Notice we build the features now WITHOUT the current ACK. Eve should not know that yet.
+        features = self.window.features(observation)
+
+        #Now the slot ends and we can update the history with the ACK value
+        self.window.update(observation, ACK)
 
         return features
 

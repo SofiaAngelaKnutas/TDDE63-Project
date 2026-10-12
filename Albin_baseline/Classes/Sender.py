@@ -82,23 +82,23 @@ class Albin_Sender:
             for i, state in enumerate(self.states)
         }
 
-        self.BobWindow = deque(
-            0 * (self.Bob_window_size),
+        self.Bob_window = deque(
+            [0] * (self.Bob_window_size),
             maxlen=Bob_window_size,
         )
 
-
     def transmit(self, packet):
-        sum = sum(
-            value if i % 2 == 0 else -value #+ - + - ...
-            for i, value in enumerate(self.Bob_window_size)
-        )
-        modulo = sum % 4
+        history_sum = sum(self.Bob_window)
         current_idx = self.state_to_idx[tuple(packet)]
-        packet_to_transmit = (current_idx - modulo) % 4
-
+        packet_idx = (current_idx - history_sum) % len(self.states)
+        packet_to_transmit = self.states[packet_idx]
         return packet_to_transmit
 
-    
+    def update_Bob_window(self, Bob_received_packet_idx):
+        self.Bob_window.appendleft(Bob_received_packet_idx)
 
-        
+    def reset(self):
+        self.Bob_window.clear()
+        self.Bob_window.extend(
+            [0] * self.Bob_window_size
+        )
