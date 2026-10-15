@@ -69,5 +69,33 @@ class Sofia_Random_Sender:
             random_index = self.rng.integers(len(self.states)) #A random state
             return self.states[random_index].copy()
 
+
+class Sofia_Keyed_Sender:
+    """
+    Randomized response defense, WITH key.
+
+    Alice and Bob share a secret key (a seed). Both use it to create
+    the same random generator, so they make the same real/fake
+    decision in every slot. Eve does not have the key.
+
+    theta      : probability of sending the real state (0 to 1)
+    states     : all possible states
+    key_seed   : the shared secret, known only by Alice and Bob
+    rng        : random generator for picking the fake state (not secret)
+    """
+    def __init__(self, theta, states, key_seed, rng=None):
+        self.theta = theta
+        self.states = states
+        self.key_rng = np.random.default_rng(key_seed)
+        self.rng = rng or np.random.default_rng()
+
+    def transmit(self, packet):
+        send_real_state = self.key_rng.random() < self.theta
+
+        if send_real_state:
+            return packet
+        else:
+            random_index = self.rng.integers(len(self.states))
+            return self.states[random_index].copy()
     
         

@@ -130,3 +130,63 @@ class HMMDecoderSofia:
         estimated_index = np.argmax(self.belief)
 
         return self.states[estimated_index].copy()
+
+class HMMDecoderKeyed:
+    """
+    Bob for the KEYED randomized response defense.
+
+    Bob has the same secret key (seed) as Alice, so he rolls the same
+    real/fake dice in every slot. Fake packets are thrown away and
+    treated like a missing packet. Real packets are trusted fully.
+    """
+    def __init__(self, states, transition_matrix, theta, key_seed):
+        self.states = np.asarray(states)
+        self.P = np.asarray(transition_matrix, dtype=float)
+
+        # Initial belief: Bob knows simulation starts in state 0
+        self.belief = np.zeros(len(self.states))
+        self.belief[0] = 1.0
+
+        self.first_slot = True
+
+        self.theta = theta
+        self.key_rng = np.random.default_rng(key_seed)
+
+    def observe(self, received_packet):
+        # STEP 0: Roll the shared key dice, EVERY slot (same as Alice)
+        packet_is_real = self.key_rng.random() < self.theta
+
+        # Fake packets are thrown away
+        if not packet_is_real:
+            received_packet = None
+
+        # STEP 1: Predict current state
+        if self.first_slot:
+            prior = self.belief.copy()
+            self.first_slot = False
+        else:
+            prior = self.belief @ self.P
+
+        # STEP 2: Calculate observation likelihood
+        if received_packet is None:
+            # Missing or fake packet provides no new state information
+            likelihood = np.ones(len(self.states))
+        else:
+            # Real packet: only matching state is possible
+            likelihood = np.all(
+                self.states == received_packet, axis=1
+            ).astype(float)
+
+        # STEP 3: Bayesian update
+        posterior = prior * likelihood
+
+        total = posterior.sum()
+        if total == 0:
+            raise ValueError("Received observation has zero probability")
+
+        self.belief = posterior / total
+
+        # STEP 4: Return most probable state
+        estimated_index = np.argmax(self.belief)
+
+        return self.states[estimated_index].copy()
