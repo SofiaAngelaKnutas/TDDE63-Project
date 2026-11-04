@@ -3,10 +3,10 @@ from Classes.MarkovChain import MarkovChain
 from Classes.Channel import Channel
 from Classes.Decoder import HMMDecoderAlbin
 from Classes.Sender import Albin_Sender
-from Classes.EveLearner import RandomForestEveACK
-from Classes.TrainEve import RandomForest_Trainer_Albin
+from Classes.EveLearner import RandomForestEve
+from Classes.TrainEve import RandomForestTrainer
+from Classes.SimulationOptions import simulation_options
 import time
-from pathlib import Path
 
 start = time.perf_counter()
 
@@ -16,18 +16,17 @@ start = time.perf_counter()
 PRETRAINED_MODEL = None #Set to None if we want to train new, otherwise the filename if we want to use a previous trained
 #PRETRAINED_MODEL = "eve_random_forest.joblib"
 
-# Ignore these if using pretrained model:
-MODEL_NAME = "RF_Albin_DefenseFULL_Window5_Bob000_Eve000" + ".joblib"
+# Training defaults (ignored when loading a model):
+DEFENSE = "albin"
+MODEL_NAME = f"eve_{DEFENSE}.joblib"
 TRAINING_RUNS = 5
-T_PER_RUN = 20_000
-WINDOW_SIZE = 5
-OBSERVATION_SIZE = 2       # baseline cleartext packet = [Y, S], might need to change depending on defense method.
+T_PER_RUN = 200_000
 
 #
 SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
-BOB_PACKET_LOSS = 0.35
-EVE_PACKET_LOSS = 0.90
-T = 100_000
+BOB_PACKET_LOSS = 0.05
+EVE_PACKET_LOSS = 0.25
+T = 1_000_000
 
 BOB_WINDOW_SIZE = 4
 
@@ -37,7 +36,7 @@ states = np.array([
     [1, 0],
     [1, 1],
 ])
-"""
+
 #A much faster markov chain
 P = np.array([
     [0.60, 0.10, 0.10, 0.20],
@@ -53,6 +52,15 @@ P = np.array([
     [0.03, 0.02, 0.94, 0.01],
     [0.01, 0.02, 0.02, 0.95],
 ])
+"""
+
+options = simulation_options(DEFENSE, T, TRAINING_RUNS, T_PER_RUN)
+T = options.steps
+TRAINING_RUNS = options.training_runs
+T_PER_RUN = options.training_steps
+model_path = options.model_dir / MODEL_NAME
+if options.model is not None:
+    PRETRAINED_MODEL = options.model
 
 source_rng = np.random.default_rng(42)
 sender_rng = np.random.default_rng(43)
@@ -80,28 +88,31 @@ if PRETRAINED_MODEL is None:
         rng=np.random.default_rng(1337)
     )
     
-    eve_trainer = RandomForest_Trainer_Albin(
-        model_name=MODEL_NAME,
+    eve_trainer = RandomForestTrainer(
+        model_path=model_path,
+        defense=DEFENSE,
         states=states,
         P=P,
         training_runs=TRAINING_RUNS,
         T_per_run=T_PER_RUN,
-        window_size=WINDOW_SIZE,
-        observation_size=OBSERVATION_SIZE,
         eve_packet_loss=EVE_PACKET_LOSS,
         bob_packet_loss=BOB_PACKET_LOSS,
         sender=training_sender,
+        feedback=lambda alice, index, ack: alice.update_Bob_window(index if ack else 0),
     )
 
     eve_trainer.train()
-    eve_decoder = RandomForestEveACK(
-        model_path=Path("TempModels") / MODEL_NAME
+    eve_decoder = RandomForestEve(
+        model_path=model_path, defense=DEFENSE
     )
     
 else:
-    eve_decoder = RandomForestEveACK(
-        model_path=Path("TempModels") / PRETRAINED_MODEL
+    eve_decoder = RandomForestEve(
+        model_path=options.model_dir / PRETRAINED_MODEL, defense=DEFENSE
     )
+
+if options.train_only:
+    raise SystemExit(0)
 
 state_history = chain.sample(T=T,start_state=0)
 
@@ -125,35 +136,32 @@ for t in range(T):
     bob_state, ACK = bob_decoder.observe(bob_received)
     bob_y, bob_s = bob_state
 
-    if ACK:
-        sender.update_Bob_window(true_index)
-    else:
-        sender.update_Bob_window(0)
-
     bob_prediction_Y.append(bob_y)
     bob_prediction_S.append(bob_s)
 
     # Eve
-    # ACK is passed here, but features() is built before ACK is stored.
-    features = eve_decoder.observe(
-        eve_received,
-        ACK,
-    )
+    features = eve_decoder.observe(eve_received)
 
+    # Freeze this slot's features before exposing ACK_t or updating history.
     eve_feature_rows.append(features)
+    eve_decoder.update(eve_received, ACK)
+    # Feedback affects only future Alice transmissions.
+    sender.update_Bob_window(true_index if ACK else 0)
 
     eve_had_current_packet.append(eve_received is not None)
 
     progress = (t + 1) / T * 100
-    print(f"\rProgress: {progress:.1f}%", end="", flush=True)
+    if not options.quiet:
+        print(f"\rProgress: {progress:.1f}%", end="", flush=True)
+    #if progress > 99:
+    #    print(f"Current features: ", features)
+
 
 print()
-print("Simulation time: ", time.perf_counter() - start)
 
-#Train all in one batch
-eve_S = eve_decoder.predict(
-    np.asarray(eve_feature_rows)
-)
+# Eve is passive: predict all frozen feature rows in one batch.
+eve_S = eve_decoder.predict(np.asarray(eve_feature_rows))
+print("Simulation time: ", time.perf_counter() - start)
 
 # Results:
 
@@ -189,10 +197,11 @@ if np.any(hidden_mask):
 received_mask = eve_had_current_packet
 
 #Opposite of above, I think it could be interesting for this defense.
-print(
-    "Eve S accuracy when encoded packet received:",
-    np.mean(eve_S[received_mask] == true_S[received_mask])
-)
+if np.any(received_mask):
+    print(
+        "Eve S accuracy when encoded packet received:",
+        np.mean(eve_S[received_mask] == true_S[received_mask])
+    )
 
 values, counts = np.unique(eve_S, return_counts=True)
 

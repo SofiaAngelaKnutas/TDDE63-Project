@@ -3,160 +3,95 @@ from collections import deque
 import joblib
 import numpy as np
 
+SCHEMA_VERSION = "packets2-history5-ack-v1"
+FEATURE_COUNT = 27
+
 
 class ObservationWindow:
-    def __init__(self, window_size=3, observation_size=2):
-        self.window_size = window_size
-        self.observation_size = observation_size
+    """Five previous slots, plus the last successful packet/feedback.
 
-        # Contains previous observations only.
-        self.history = deque(
-            [None] * (window_size - 1),
-            maxlen=window_size - 1,
-        )
+    Freeze features(packet) before update(packet, ack). Frozen rows can be
+    predicted together after the run. Neither operation accepts hidden state.
+    Packet encoding: [present, value0, value1]. Feedback: None=-1, NACK=0,
+    ACK=1. Startup padding uses the same encoding as missing observations.
+    """
 
-    #Sometimes we send "None" packets. Random Forest cannot interpret "None", so we transform to [-1, -1]
-    def _encode(self, observation):
-        if observation is None:
-            return np.full(self.observation_size, -1.0)
+    def __init__(self, window_size=5, observation_size=2):
+        if window_size != 5 or observation_size != 2:
+            raise ValueError("Unified Eve requires five previous slots and two-value packets")
+        self.history = deque([None] * 5, maxlen=5)
+        self.ack_history = deque([None] * 5, maxlen=5)
+        self.last_received_packet = None
+        self.last_received_ack = None
 
-        observation = np.asarray(observation, dtype=float)
+    @staticmethod
+    def _encode(packet):
+        if packet is None:
+            return np.zeros(3)
+        values = np.asarray(packet, dtype=float).reshape(-1)
+        if values.size != 2 or not np.all(np.isfinite(values)):
+            raise ValueError("Expected a finite two-value packet or None")
+        return np.concatenate(([1.0], values))
 
-        if observation.size != self.observation_size:
-            raise ValueError(
-                f"Expected observation size {self.observation_size}, "
-                f"got {observation.size}"
-            )
-
-        return observation
-
-    def features(self, current_observation):
-        observations = list(self.history) + [current_observation]
-
-        return np.concatenate([
-            self._encode(obs)
-            for obs in observations
-        ])
-
-    def update(self, observation):
-        if self.window_size > 1:
-            self.history.append(observation)
-
-class ObservationWindowACK:
-    def __init__(self, window_size=3, observation_size=2):
-        self.window_size = window_size
-        self.observation_size = observation_size
-
-        """
-        Each history entry is:
-        (Eve observation, Bob's ACK/NACK for that packet)
-
-        ACK:
-        1 = Bob Received
-        0 = Bob Missed
-        -1 = No slot exists yet. (We do not know at this stage if ACK or NACK)
-        """
-        self.history = deque(
-            [(None, -1)] * (window_size - 1),
-            maxlen=window_size - 1,
-        )
-
-    #Sometimes we send "None" packets. Random Forest cannot interpret "None", so we transform to [-1, -1]
-    def _encode(self, observation, ack):
-        if observation is None:
-            observation = np.full(
-                self.observation_size,
-                -1.0
-        )
-        else:
-            observation = np.asarray(
-                observation,
-                dtype=float
-            ).reshape(-1)
-
-        if observation.size != self.observation_size:
-            raise ValueError(
-                f"Expected observation size {self.observation_size}, "
-                f"got {observation.size}"
-            )
-
-        return np.concatenate([
-            observation,
-            [float(ack)]
-        ])
+    @staticmethod
+    def _encode_ack(ack):
+        if ack is None:
+            return -1.0
+        if ack not in (0, 1):
+            raise ValueError("ACK/NACK must be True/1, False/0, or None")
+        return float(ack)
 
     def features(self, current_observation):
-        records = [
-            self._encode(observation, ack)
-            for observation, ack in self.history
-        ]
+        """Return a fresh row without changing history.
 
-        # Current ACK/NACK is not known yet. -1 as ACK
-        records.append(
-            self._encode(current_observation, -1)
-        )
+        [current packet (3), last received packet (3), last feedback (1),
+        five previous packets (15), five previous feedback values (5)].
+        Both histories are ordered oldest to newest.
+        """
+        return np.concatenate([
+            self._encode(current_observation),
+            self._encode(self.last_received_packet),
+            [self._encode_ack(self.last_received_ack)],
+            *(self._encode(packet) for packet in self.history),
+            [self._encode_ack(ack) for ack in self.ack_history],
+        ])
 
-        return np.concatenate(records)
-
-    def update(self, observation, ACK):
-        if self.window_size > 1:
-            self.history.append(
-                (observation, 1 if ACK else 0)
-            )
+    def update(self, observation, ack):
+        """Commit this slot after its features are frozen"""
+        self._encode(observation)
+        self._encode_ack(ack)
+        packet = None if observation is None else np.asarray(observation).reshape(-1).copy()
+        self.history.append(packet)
+        self.ack_history.append(ack)
+        if packet is not None:
+            self.last_received_packet = packet
+        if ack is not None:
+            self.last_received_ack = ack
 
 
 class RandomForestEve:
-    def __init__(self, model_path):
+    def __init__(self, model_path, defense):
         saved = joblib.load(model_path)
-
+        if saved.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError("Incompatible Eve feature schema; retrain this model")
+        if saved.get("defense") != defense:
+            raise ValueError(f"Expected {defense!r} model, got {saved.get('defense')!r}")
         self.model = saved["model"]
-
-        self.window = ObservationWindow( #We dont need to load this, but could possibly prevent some accident :)
-            window_size=saved["window_size"],
-            observation_size=saved["observation_size"],
-        )
+        if saved.get("feature_count") != FEATURE_COUNT or self.model.n_features_in_ != FEATURE_COUNT:
+            raise ValueError("Incompatible Eve feature dimensions; retrain this model")
+        self.window = ObservationWindow()
 
     def observe(self, observation):
-        """
-        Build feature row from current observation,
-        then update Eve's observation history.
-        """
-        features = self.window.features(observation)
-
-        self.window.update(observation)
-
-        return features
+        """Build features without committing the slot or receiving current ACK."""
+        return self.window.features(observation)
 
     def predict(self, features):
-        features = np.asarray(features, dtype=float)
+        rows = np.asarray(features, dtype=float)
+        if rows.ndim == 1:
+            rows = rows.reshape(1, -1)
+        if rows.ndim != 2 or rows.shape[1] != FEATURE_COUNT:
+            raise ValueError(f"Expected feature rows with {FEATURE_COUNT} columns")
+        return self.model.predict(rows).astype(int)
 
-        return self.model.predict(features).astype(int)
-
-class RandomForestEveACK:
-    def __init__(self, model_path):
-        saved = joblib.load(model_path)
-
-        self.model = saved["model"]
-
-        self.window = ObservationWindowACK( #We dont need to load this, but could possibly prevent some accident :)
-            window_size=saved["window_size"],
-            observation_size=saved["observation_size"],
-        )
-
-    def observe(self, observation, ACK):
-        """
-        Build feature row from current observation,
-        then update Eve's observation history.
-        """
-        #Notice we build the features now WITHOUT the current ACK. Eve should not know that yet.
-        features = self.window.features(observation)
-
-        #Now the slot ends and we can update the history with the ACK value
-        self.window.update(observation, ACK)
-
-        return features
-
-    def predict(self, features):
-        features = np.asarray(features, dtype=float)
-
-        return self.model.predict(features).astype(int)
+    def update(self, observation, ack):
+        self.window.update(observation, ack)

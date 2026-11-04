@@ -4,9 +4,9 @@ from Classes.Channel import Channel
 from Classes.Decoder import HMMDecoder
 from Classes.Sender import Sender
 from Classes.EveLearner import RandomForestEve
-from Classes.TrainEve import RandomForest_Trainer
+from Classes.TrainEve import RandomForestTrainer
+from Classes.SimulationOptions import simulation_options
 import time
-from pathlib import Path
 
 start = time.perf_counter()
 
@@ -16,12 +16,11 @@ start = time.perf_counter()
 PRETRAINED_MODEL = None #Set to None if we want to train new, otherwise the filename if we want to use a previous trained
 #PRETRAINED_MODEL = "eve_random_forest.joblib"
 
-# Ignore these if using pretrained model:
-MODEL_NAME = "RF_Window4_Bob005_Eve025" + ".joblib"
+# Training defaults (ignored when loading a model):
+DEFENSE = "baseline"
+MODEL_NAME = f"eve_{DEFENSE}.joblib"
 TRAINING_RUNS = 5
 T_PER_RUN = 20_000
-WINDOW_SIZE = 4
-OBSERVATION_SIZE = 2       # baseline cleartext packet = [Y, S], might need to change depending on defense method.
 
 #
 SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
@@ -42,6 +41,14 @@ P = np.array([
     [0.25, 0.15, 0.35, 0.25],
     [0.20, 0.10, 0.10, 0.60],
 ])
+
+options = simulation_options(DEFENSE, T, TRAINING_RUNS, T_PER_RUN)
+T = options.steps
+TRAINING_RUNS = options.training_runs
+T_PER_RUN = options.training_steps
+model_path = options.model_dir / MODEL_NAME
+if options.model is not None:
+    PRETRAINED_MODEL = options.model
 
 source_rng = np.random.default_rng(42)
 sender_rng = np.random.default_rng(43)
@@ -67,27 +74,30 @@ if PRETRAINED_MODEL is None:
         rng=np.random.default_rng(1337)
     )
     
-    eve_trainer = RandomForest_Trainer(
-        model_name=MODEL_NAME,
+    eve_trainer = RandomForestTrainer(
+        model_path=model_path,
+        defense=DEFENSE,
         states=states,
         P=P,
         training_runs=TRAINING_RUNS,
         T_per_run=T_PER_RUN,
-        window_size=WINDOW_SIZE,
-        observation_size=OBSERVATION_SIZE,
         eve_packet_loss=EVE_PACKET_LOSS,
+        bob_packet_loss=BOB_PACKET_LOSS,
         sender=training_sender,
     )
 
     eve_trainer.train()
     eve_decoder = RandomForestEve(
-        model_path=Path("TempModels") / MODEL_NAME
+        model_path=model_path, defense=DEFENSE
     )
     
 else:
     eve_decoder = RandomForestEve(
-        model_path=Path("TempModels") / PRETRAINED_MODEL
+        model_path=options.model_dir / PRETRAINED_MODEL, defense=DEFENSE
     )
+
+if options.train_only:
+    raise SystemExit(0)
 
 state_history = chain.sample(T=T,start_state=0)
 
@@ -115,20 +125,21 @@ for t in range(T):
 
     # Eve
     features = eve_decoder.observe(eve_received)
+    # Freeze this slot's features before exposing ACK_t or updating history.
     eve_feature_rows.append(features)
+    eve_decoder.update(eve_received, bob_received is not None)
 
     eve_had_current_packet.append(eve_received is not None)
 
     progress = (t + 1) / T * 100
-    print(f"\rProgress: {progress:.1f}%", end="", flush=True)
+    if not options.quiet:
+        print(f"\rProgress: {progress:.1f}%", end="", flush=True)
 
 print()
-print("Simulation time: ", time.perf_counter() - start)
 
-#Train all in one batch
-eve_S = eve_decoder.predict(
-    np.asarray(eve_feature_rows)
-)
+# Eve is passive: predict all frozen feature rows in one batch.
+eve_S = eve_decoder.predict(np.asarray(eve_feature_rows))
+print("Simulation time: ", time.perf_counter() - start)
 
 # Results:
 

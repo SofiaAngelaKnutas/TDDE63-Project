@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 
 import joblib
@@ -6,245 +7,76 @@ from sklearn.ensemble import RandomForestClassifier
 
 from Classes.MarkovChain import MarkovChain
 from Classes.Channel import Channel
-from Classes.EveLearner import ObservationWindow, ObservationWindowACK
+from Classes.EveLearner import ObservationWindow, FEATURE_COUNT, SCHEMA_VERSION
 
 
-class RandomForest_Trainer:
-    def __init__(
-        self,
-        model_name,
-        states,
-        P,
-        training_runs,
-        T_per_run,
-        window_size,
-        observation_size,
-        eve_packet_loss,
-        sender,
-    ):
-        self.model_name = model_name
-
+class RandomForestTrainer:
+    def __init__(self, model_path, defense, states, P, training_runs, T_per_run,
+                 eve_packet_loss, bob_packet_loss, sender, feedback=None, seed=1000):
+        self.model_path = Path(model_path)
+        self.defense = defense
         self.states = np.asarray(states)
         self.P = np.asarray(P)
-
+        if training_runs < 1 or T_per_run < 1:
+            raise ValueError("Training runs and steps must be positive")
         self.training_runs = training_runs
         self.T_per_run = T_per_run
-        self.window_size = window_size
-        self.observation_size = observation_size
         self.eve_packet_loss = eve_packet_loss
-
-        self.sender = sender
-
-    def train(self):
-        X_train = []
-        y_train = []
-
-        master_rng = np.random.default_rng(1000)
-
-        for run in range(self.training_runs):
-            chain = MarkovChain(
-                states=self.states,
-                transition_matrix=self.P,
-                rng=np.random.default_rng(
-                    master_rng.integers(0, 2**32)
-                ),
-            )
-
-            eve_channel = Channel(
-                packet_loss=self.eve_packet_loss,
-                rng=np.random.default_rng(
-                    master_rng.integers(0, 2**32)
-                ),
-            )
-
-            window = ObservationWindow(
-                window_size=self.window_size,
-                observation_size=self.observation_size,
-            )
-
-            state_history = chain.sample(
-                T=self.T_per_run,
-                start_state=0,
-            )
-
-            for t in range(self.T_per_run):
-                true_state = self.states[state_history[t]]
-                true_y, true_s = true_state
-
-                sent_packet = self.sender.transmit(true_state)
-                eve_received = eve_channel.observe(sent_packet)
-
-                features = window.features(eve_received)
-
-                X_train.append(features)
-
-                # Ground truth is ONLY the supervised-learning label.
-                y_train.append(int(true_s))
-
-                # Eve remembers what it actually observed.
-                window.update(eve_received)
-
-        X_train = np.asarray(X_train, dtype=float)
-        y_train = np.asarray(y_train, dtype=int)
-
-        print("Training examples:", X_train.shape[0])
-        print("Features per example:", X_train.shape[1])
-
-        model = RandomForestClassifier(
-            n_estimators=100,
-            random_state=42,
-            n_jobs=-1,
-        )
-
-        model.fit(X_train, y_train)
-
-        output_dir = Path("TempModels")
-        output_dir.mkdir(exist_ok=True)
-
-        model_path = output_dir / self.model_name
-
-        joblib.dump(
-            {
-                "model": model,
-                "window_size": self.window_size,
-                "observation_size": self.observation_size,
-                "attacker_model": "observation_window",
-            },
-            model_path,
-        )
-
-        print("Saved model to:", model_path)
-        print("Training accuracy:", model.score(X_train, y_train))
-
-
-class RandomForest_Trainer_Albin:
-    def __init__(
-        self,
-        model_name,
-        states,
-        P,
-        training_runs,
-        T_per_run,
-        window_size,
-        observation_size,
-        eve_packet_loss,
-        sender,
-        bob_packet_loss,
-    ):
-        self.model_name = model_name
-
-        self.states = np.asarray(states)
-        self.P = np.asarray(P)
-
-        self.training_runs = training_runs
-        self.T_per_run = T_per_run
-        self.window_size = window_size
-        self.observation_size = observation_size
-        self.eve_packet_loss = eve_packet_loss
-
-        self.sender = sender
         self.bob_packet_loss = bob_packet_loss
+        self.sender = deepcopy(sender) #Creates fresh copy without memory from last run
+        self.feedback = feedback
+        self.seed = seed
 
-        self.state_to_idx = { #Just to translate [1, 1] == 3 for example
-            tuple(state): i
-            for i, state in enumerate(self.states)
-        }
+    def generate_data(self):
+        X, y = [], []
+        # Separate streams for source, sender, Bob, Eve
+        run_seeds = np.random.SeedSequence(self.seed).spawn(self.training_runs)
+        for run_seed in run_seeds:
+            source_seed, sender_seed, bob_seed, eve_seed = run_seed.spawn(4)
+            chain = MarkovChain(self.states, self.P, np.random.default_rng(source_seed))
+            sender = deepcopy(self.sender)
+            sender.rng = np.random.default_rng(sender_seed)
+            bob_channel = Channel(self.bob_packet_loss, np.random.default_rng(bob_seed))
+            eve_channel = Channel(self.eve_packet_loss, np.random.default_rng(eve_seed))
+            window = ObservationWindow()
+            for index in chain.sample(self.T_per_run, start_state=0):
+                true_state = self.states[index]
+                packet = sender.transmit(true_state)
+                bob_received = bob_channel.observe(packet)
+                eve_received = eve_channel.observe(packet)
+                # All existing Bob decoders ACK iff a packet was received.
+                # Decoding itself cannot affect the observations used by Eve.
+                ack = bob_received is not None
+                X.append(window.features(eve_received))
+                y.append(int(true_state[1]))
+                
+                window.update(eve_received, ack)
+                if self.feedback is not None:
+                    self.feedback(sender, int(index), ack)
+        return np.asarray(X, dtype=float), np.asarray(y, dtype=int)
 
     def train(self):
-        X_train = []
-        y_train = []
-
-        master_rng = np.random.default_rng(1000)
-
-        for run in range(self.training_runs):
-            chain = MarkovChain(
-                states=self.states,
-                transition_matrix=self.P,
-                rng=np.random.default_rng(
-                    master_rng.integers(0, 2**32)
-                ),
-            )
-
-            bob_channel = Channel(
-                packet_loss=self.bob_packet_loss,
-                rng=np.random.default_rng(
-                    master_rng.integers(0, 2**32)
-                ),
-            )
-
-            eve_channel = Channel(
-                packet_loss=self.eve_packet_loss,
-                rng=np.random.default_rng(
-                    master_rng.integers(0, 2**32)
-                ),
-            )
-
-            window = ObservationWindowACK(
-                window_size=self.window_size,
-                observation_size=self.observation_size,
-            )
-
-            state_history = chain.sample(
-                T=self.T_per_run,
-                start_state=0,
-            )
-
-            self.sender.reset()
-
-            for t in range(self.T_per_run):
-                true_state = self.states[state_history[t]]
-                true_y, true_s = true_state
-
-                sent_packet = self.sender.transmit(true_state)
-
-                bob_received = bob_channel.observe(sent_packet)
-                eve_received = eve_channel.observe(sent_packet)
-
-                ACK = bob_received is not None
-                features = window.features(eve_received) #First build features
-
-                X_train.append(features)
-                y_train.append(int(true_s))
-
-                # Slot has now ended. ACK_t becomes public.
-                window.update(eve_received, ACK)
-
-                # Alice also learns Bob's ACK/NACK.
-                if ACK:
-                    self.sender.update_Bob_window(
-                        self.state_to_idx[tuple(true_state)]
-                    )
-                else:
-                    self.sender.update_Bob_window(0)
-
-        X_train = np.asarray(X_train, dtype=float)
-        y_train = np.asarray(y_train, dtype=int)
-
-        print("Training examples:", X_train.shape[0])
-        print("Features per example:", X_train.shape[1])
-
-        model = RandomForestClassifier(
-            n_estimators=100,
-            random_state=42,
-            n_jobs=-1,
-        )
-
-        model.fit(X_train, y_train)
-
-        output_dir = Path("TempModels")
-        output_dir.mkdir(exist_ok=True)
-
-        model_path = output_dir / self.model_name
-
-        joblib.dump(
-            {
-                "model": model,
-                "window_size": self.window_size,
-                "observation_size": self.observation_size,
-                "attacker_model": "observation_window",
+        X, y = self.generate_data()
+        model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+        model.fit(X, y)
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump({
+            "model": model,
+            "schema_version": SCHEMA_VERSION,
+            "feature_count": FEATURE_COUNT,
+            "defense": self.defense,
+            "training_seed": self.seed,
+            "training_samples": len(y),
+            "states": self.states,
+            "transition_matrix": self.P,
+            "bob_packet_loss": self.bob_packet_loss,
+            "eve_packet_loss": self.eve_packet_loss,
+            "sender_parameters": {
+                name: getattr(self.sender, name)
+                for name in ("sending_probability", "theta", "Bob_window_size")
+                if hasattr(self.sender, name)
             },
-            model_path,
-        )
-
-        print("Saved model to:", model_path)
-        print("Training accuracy:", model.score(X_train, y_train))
+        }, self.model_path)
+        print(f"Trained {self.defense}: {len(y)} samples, {X.shape[1]} features")
+        print("Saved model to:", self.model_path)
+        return self.model_path
