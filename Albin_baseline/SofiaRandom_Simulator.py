@@ -28,7 +28,7 @@ BOB_PACKET_LOSS = 0.05
 EVE_PACKET_LOSS = 0.25
 T = 100_000
 
-THETA = 0.8
+THETA = 0.4
 
 states = np.array([
     [0, 0],

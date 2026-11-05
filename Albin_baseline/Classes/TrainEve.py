@@ -32,10 +32,13 @@ class RandomForestTrainer:
         # Separate streams for source, sender, Bob, Eve
         run_seeds = np.random.SeedSequence(self.seed).spawn(self.training_runs)
         for run_seed in run_seeds:
-            source_seed, sender_seed, bob_seed, eve_seed = run_seed.spawn(4)
+            source_seed, sender_seed, bob_seed, eve_seed, key_seed = run_seed.spawn(5)
             chain = MarkovChain(self.states, self.P, np.random.default_rng(source_seed))
             sender = deepcopy(self.sender)
             sender.rng = np.random.default_rng(sender_seed)
+            # Give keyed senders a fresh real/fake schedule for each training run. Used by Sofia_Keyed
+            if hasattr(sender, "key_rng"):
+                sender.key_rng = np.random.default_rng(key_seed)
             bob_channel = Channel(self.bob_packet_loss, np.random.default_rng(bob_seed))
             eve_channel = Channel(self.eve_packet_loss, np.random.default_rng(eve_seed))
             window = ObservationWindow()
