@@ -20,13 +20,13 @@ PRETRAINED_MODEL = None #Set to None if we want to train new, otherwise the file
 DEFENSE = "albin"
 MODEL_NAME = f"eve_{DEFENSE}.joblib"
 TRAINING_RUNS = 5
-T_PER_RUN = 200_000
+T_PER_RUN = 20_000
 
 #
 SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
 BOB_PACKET_LOSS = 0.05
 EVE_PACKET_LOSS = 0.25
-T = 1_000_000
+T = 100_000
 
 BOB_WINDOW_SIZE = 4
 
@@ -72,6 +72,7 @@ chain = MarkovChain(states=states, transition_matrix=P, rng=source_rng)
 sender = Albin_Sender(
     states=states,
     Bob_window_size=BOB_WINDOW_SIZE,
+    sending_probability=SENDING_PROBABILITY,
     rng=sender_rng
 )
 
@@ -85,6 +86,7 @@ if PRETRAINED_MODEL is None:
     training_sender = Albin_Sender(
         states=states,
         Bob_window_size=BOB_WINDOW_SIZE,
+        sending_probability=SENDING_PROBABILITY,
         rng=np.random.default_rng(1337)
     )
     

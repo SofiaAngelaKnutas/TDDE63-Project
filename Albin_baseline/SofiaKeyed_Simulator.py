@@ -6,7 +6,6 @@ from Classes.Sender import Sofia_Keyed_Sender
 from Classes.EveLearner import RandomForestEve
 from Classes.TrainEve import RandomForestTrainer
 from Classes.SimulationOptions import simulation_options
-
 import time
 from pathlib import Path
 
@@ -25,7 +24,7 @@ TRAINING_RUNS = 5
 T_PER_RUN = 20_000
 
 #
-#SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
+SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
 BOB_PACKET_LOSS = 0.05
 EVE_PACKET_LOSS = 0.25
 T = 100_000
@@ -67,6 +66,7 @@ sender = Sofia_Keyed_Sender(
     theta=THETA,
     states=states,
     key_seed=KEY_SEED,
+    sending_probability=SENDING_PROBABILITY,
     rng=sender_rng
 )
 

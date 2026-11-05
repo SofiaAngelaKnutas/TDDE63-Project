@@ -257,3 +257,76 @@ class HMMDecoderAlbin:
         estimated_index = np.argmax(self.belief)
 
         return self.states[estimated_index].copy(), ACK
+
+class HMMDecoderEmelie:
+    """Decode with the last received source state as the shared reference.
+
+    Markov predictions during packet loss update belief only, never reference.
+    """
+    def __init__(self, states, transition_matrix):
+        self.states = np.asarray(states)
+        self.P = np.asarray(transition_matrix, dtype=float)
+
+        # Initial belief: Bob knows simulation starts in state 0
+        self.belief = np.zeros(len(self.states))
+        self.belief[0] = 1.0
+
+        self.first_slot = True
+
+        self.state_to_idx = { #Just to translate [1, 1] == 3 for example
+            tuple(state): i
+            for i, state in enumerate(self.states)
+        }
+
+        self.reference = 0 #initial R for Alice and Bob
+
+    def observe(self, received_packet):
+        # STEP 1: Predict current state
+        ACK = False
+
+        if self.first_slot:
+            # At t=0, source is already in initial state.
+            prior = self.belief.copy()
+            self.first_slot = False
+        else:
+            # Predict next state using Markov transition matrix
+            prior = self.belief @ self.P
+
+        # STEP 2: Calculate observation likelihood
+        if received_packet is None:
+            # Missing packet provides no new state information
+            likelihood = np.ones(len(self.states))
+        else:
+            # Perfect reception: Decode the state then update likelihood + ACK
+            encoded_packet = self.state_to_idx[tuple(received_packet)]
+            decoded_packet = (encoded_packet - self.reference) % len(self.states)
+
+            likelihood = np.zeros(len(self.states))
+            likelihood[decoded_packet] = 1.0
+
+            ACK = True
+
+        # STEP 3: Bayesian update (Basically: (what markov said) * (what the received packet said))
+        posterior = prior * likelihood
+        total = posterior.sum()
+
+        if total == 0:
+            raise ValueError("Received observation has zero probability")
+
+        self.belief = posterior / total
+
+        # Commit the reference only after successful decoding. Alice commits
+        # the same source index when this slot's reliable ACK reaches her.
+        if ACK:
+            self.reference = decoded_packet
+
+        # STEP 4: Return most probable state (MAP)
+        estimated_index = np.argmax(self.belief)
+
+        return self.states[estimated_index].copy(), ACK
+
+    def reset(self):
+        self.belief = np.zeros(len(self.states))
+        self.belief[0] = 1.0
+        self.first_slot = True
+        self.reference = 0

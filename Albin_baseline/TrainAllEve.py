@@ -11,7 +11,9 @@ SIMULATORS = (
     "Baseline_Simulator.py",
     "Filip_Simulator.py",
     "SofiaRandom_Simulator.py",
+    "SofiaKeyed_Simulator.py",
     "Albin_Defense_Simulator.py",
+    "Emelie_Simulator.py",
 )
 
 
@@ -29,6 +31,7 @@ def main():
             "--training-steps", str(args.training_steps),
             "--model-dir", str(args.model_dir.resolve()),
         ], check=True)
+        print("----------------------------------------")
 
 
 if __name__ == "__main__":

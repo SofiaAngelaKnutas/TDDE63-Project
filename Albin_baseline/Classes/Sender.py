@@ -34,7 +34,9 @@ class Sender_Filip:
         expected_state = self.states[expected_state_idx]
 
         self.previous_state = packet.copy()
-
+        
+        if self.rng.random() > self.sending_probability:
+            return None
         # If current state is exactly what was expected,
         # don't bother transmitting
         if np.array_equal(expected_state, packet):
@@ -55,7 +57,8 @@ class Sofia_Random_Sender:
 
     Returns the index of the state Alice actually sends.
     """
-    def __init__(self, theta, states, rng):
+    def __init__(self, theta, states, sending_probability=1.0, rng=None):
+        self.sending_probability = sending_probability
         self.theta = theta
         self.states = states
         self.rng = rng or np.random.default_rng()
@@ -63,7 +66,8 @@ class Sofia_Random_Sender:
     def transmit(self, packet):
 
         send_real_state = self.rng.random() < self.theta
-
+        if self.rng.random() > self.sending_probability:
+            return None
         if send_real_state:
             return packet
         else:
@@ -83,7 +87,8 @@ class Sofia_Keyed_Sender:
     key_seed   : the shared secret, known only by Alice and Bob
     rng        : random generator for picking the fake state (not secret)
     """
-    def __init__(self, theta, states, key_seed, rng=None):
+    def __init__(self, theta, states, key_seed, sending_probability=1.0, rng=None):
+        self.sending_probability = sending_probability
         self.theta = theta
         self.states = states
         self.key_rng = np.random.default_rng(key_seed)
@@ -91,7 +96,8 @@ class Sofia_Keyed_Sender:
 
     def transmit(self, packet):
         send_real_state = self.key_rng.random() < self.theta
-
+        if self.rng.random() > self.sending_probability:
+            return None
         if send_real_state:
             return packet
         else:
@@ -100,7 +106,8 @@ class Sofia_Keyed_Sender:
 
 
 class Albin_Sender:
-    def __init__(self, states, Bob_window_size, rng=None):
+    def __init__(self, states, Bob_window_size, sending_probability=1.0, rng=None):
+        self.sending_probability = sending_probability
         self.states = states
         self.Bob_window_size = Bob_window_size
         self.rng = rng or np.random.default_rng()
@@ -120,6 +127,8 @@ class Albin_Sender:
         current_idx = self.state_to_idx[tuple(packet)]
         packet_idx = (current_idx - history_sum) % len(self.states)
         packet_to_transmit = self.states[packet_idx]
+        if self.rng.random() > self.sending_probability:
+            return None        
         return packet_to_transmit
 
     def update_Bob_window(self, Bob_received_packet_idx):
@@ -130,3 +139,48 @@ class Albin_Sender:
         self.Bob_window.extend(
             [0] * self.Bob_window_size
         )
+
+class Sender_Emelie:
+    """Encode against the last ACKed source state, without a window.
+
+    Feedback is reliable and arrives after this slot, before the next transmit.
+    An absent ACK leaves the reference unchanged, including across loss bursts.
+    """
+    def __init__(self, states, sending_probability=1.0, rng=None):
+        self.sending_probability = sending_probability
+        self.states = np.asarray(states)
+        self.rng = rng or np.random.default_rng()
+
+        self.state_to_idx = { #Just to translate [1, 1] == 3 for example
+            tuple(state): i
+            for i, state in enumerate(self.states)
+        }
+
+        self.reference = 0 #initial R for Alice and Bob
+        self.pending_state_idx = None
+
+    def transmit(self, packet):
+        current_idx = self.state_to_idx[tuple(packet)]
+        packet_idx = (current_idx + self.reference) % len(self.states)
+        # Alice already knows her own source state; ACK carries only success.
+        self.pending_state_idx = current_idx
+        if self.rng.random() > self.sending_probability:
+            return None
+        return self.states[packet_idx].copy() #copy incase other code modifies it (might not be needed)
+
+    def ack(self, state_idx=None):
+        """ACK the current transmission, never a prediction made during loss.
+
+        The optional index preserves the existing ack(state_idx) interface.
+        It must match the state Alice actually transmitted in this slot.
+        """
+        if self.pending_state_idx is None:
+            raise ValueError("No transmission awaiting ACK")
+        if state_idx is not None and state_idx != self.pending_state_idx:
+            raise ValueError("ACK does not match the current transmission")
+        self.reference = self.pending_state_idx
+        self.pending_state_idx = None
+
+    def reset(self):
+        self.reference = 0
+        self.pending_state_idx = None

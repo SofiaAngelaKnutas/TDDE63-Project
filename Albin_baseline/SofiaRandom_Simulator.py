@@ -23,7 +23,7 @@ TRAINING_RUNS = 5
 T_PER_RUN = 20_000
 
 #
-#SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
+SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
 BOB_PACKET_LOSS = 0.05
 EVE_PACKET_LOSS = 0.25
 T = 100_000
@@ -62,6 +62,7 @@ chain = MarkovChain(states=states, transition_matrix=P, rng=source_rng)
 sender = Sofia_Random_Sender(
     theta=THETA,
     states=states,
+    sending_probability=SENDING_PROBABILITY,
     rng=sender_rng
 )
 
@@ -75,6 +76,7 @@ if PRETRAINED_MODEL is None:
     training_sender = Sofia_Random_Sender(
         theta=THETA,
         states=states,
+        sending_probability=SENDING_PROBABILITY,
         rng=np.random.default_rng(1337)
     )
     
