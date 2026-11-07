@@ -149,7 +149,8 @@ for t in range(T):
     eve_had_current_packet.append(eve_received is not None)
 
     progress = (t + 1) / T * 100
-    print(f"\rProgress: {progress:.1f}%", end="", flush=True)
+    if not options.quiet:
+        print(f"\rProgress: {progress:.1f}%", end="", flush=True)
 
 print()
 

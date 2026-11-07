@@ -12,8 +12,9 @@ SIMULATORS = (
     "Filip_Simulator.py",
     "SofiaRandom_Simulator.py",
     "SofiaKeyed_Simulator.py",
-    "Albin_Defense_Simulator.py",
+    "Alma_Simulator.py",
     "Emelie_Simulator.py",
+    "Albin_Defense_Simulator.py",
 )
 
 
@@ -26,7 +27,7 @@ def main():
     for simulator in SIMULATORS:
         subprocess.run([
             sys.executable, str(Path(__file__).parent / simulator),
-            "--quiet",
+            #"--quiet",
             "--training-runs", str(args.training_runs),
             "--training-steps", str(args.training_steps),
             "--model-dir", str(args.model_dir.resolve()),
