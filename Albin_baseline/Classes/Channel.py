@@ -3,8 +3,8 @@ import math #we need e log and ^
 
 class Channel:
 
-    def __init__(self, packet_loss=0.0, rng=None):
-        self.packet_loss = packet_loss
+    def __init__(self, rec_probability=1.0, rng=None):
+        self.packet_loss = 1 - rec_probability
         self.rng = rng or np.random.default_rng()
 
     def observe(self, packet):

@@ -21,7 +21,7 @@ SIMULATORS = (
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--training-runs", type=positive_int, default=5)
-    parser.add_argument("--training-steps", type=positive_int, default=20_000)
+    parser.add_argument("--training-steps", type=positive_int, default=2000)
     parser.add_argument("--model-dir", type=Path, default=MODEL_DIR)
     args = parser.parse_args()
     for simulator in SIMULATORS:

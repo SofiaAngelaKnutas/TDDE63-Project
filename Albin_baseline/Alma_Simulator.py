@@ -36,14 +36,14 @@ PRETRAINED_MODEL = None #Set to None if we want to train new, otherwise the file
 DEFENSE = "alma"
 MODEL_NAME = f"eve_{DEFENSE}.joblib"
 TRAINING_RUNS = 5
-T_PER_RUN = 20_000
+T_PER_RUN = 2000
 
-SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
-BOB_RECEPTION_PROBABILITY = 0.95
-EVE_RECEPTION_PROBABILITY = 0.75
+SENDING_PROBABILITY = 1.0
+BOB_RECEPTION_PROBABILITY = 0.99
+EVE_RECEPTION_PROBABILITY = 0.50
 T = 100_000
 
-JAM_POWERS = [0, 1, 3, 10, 30]  # how strong Bob's jamming is (0 = no jamming)
+JAM_POWERS = [0, 1, 3, 10, 42]  # how strong Bob's jamming is (0 = no jamming)
 SELF_INTERFERENCE = 0.1         # share of Bob's jamming he can NOT cancel (0 = perfect)
 
 states = np.array([
@@ -115,8 +115,8 @@ def run(jam_power):
             P=P,
             training_runs=TRAINING_RUNS,
             T_per_run=T_PER_RUN,
-            eve_packet_loss=eve_channel.get_packet_loss(),
-            bob_packet_loss=bob_channel.get_packet_loss(),
+            eve_reception_probability=(1-eve_channel.get_packet_loss()),
+            bob_reception_probability=(1-bob_channel.get_packet_loss()),
             sender=training_sender,
         )
 
@@ -173,7 +173,7 @@ def run(jam_power):
 
     # Eve is passive: predict all frozen feature rows in one batch.
     eve_S = eve_decoder.predict(np.asarray(eve_feature_rows))
-    print("Simulation time: ", time.perf_counter() - start)
+    print(f"Simulation time: {time.perf_counter() - start:.1f} s")
 
     # Results:
 
@@ -190,24 +190,21 @@ def run(jam_power):
 
     CRA = bob_correct & eve_wrong
 
-    print("Bob Y accuracy:", np.mean(bob_Y == true_Y))
-    print("Bob S accuracy:", np.mean(bob_S == true_S))
-    print("Bob joint (Y + S) accuracy:", np.mean(bob_correct))
-    print("Eve S accuracy:", np.mean(eve_S == true_S))
-    print("Average CRA:", np.mean(CRA))
+    print(f"Bob Y accuracy: {np.mean(bob_Y == true_Y):.1%}")
+    print(f"Bob S accuracy: {np.mean(bob_S == true_S):.1%}")
+    print(f"Bob joint (Y + S) accuracy: {np.mean(bob_correct):.1%}")
+    print(f"Eve S accuracy: {np.mean(eve_S == true_S):.1%}")
+    print(f"Average CRA: {np.mean(CRA):.1%}")
 
     # ~ is invert function. Basically, look at where Eve had no packet; 
     # What was her accuracy then (so when the RF-model actually did some work)
     hidden_mask = ~eve_had_current_packet
     if np.any(hidden_mask):
-        print(
-            "Eve S accuracy when current packet unavailable:",
-            np.mean(eve_S[hidden_mask] == true_S[hidden_mask]),
-        )
+        print(f"Eve S accuracy when current packet unavailable: {np.mean(eve_S[hidden_mask] == true_S[hidden_mask]):.1%}")
 
 if __name__ == "__main__":
     """
     Can run all different powers, or just choose one jam-power and run that.
     """
-    jam_power = JAM_POWERS[4]
+    jam_power = JAM_POWERS[1]
     run(jam_power)

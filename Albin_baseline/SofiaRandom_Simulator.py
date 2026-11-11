@@ -20,12 +20,12 @@ PRETRAINED_MODEL = None #Set to None if we want to train new, otherwise the file
 DEFENSE = "sofia"
 MODEL_NAME = f"eve_{DEFENSE}.joblib"
 TRAINING_RUNS = 5
-T_PER_RUN = 20_000
+T_PER_RUN = 2000
 
 #
-SENDING_PROBABILITY = 0.9  #0.93-0.94 found optimal for this simple test
-BOB_PACKET_LOSS = 0.05
-EVE_PACKET_LOSS = 0.25
+SENDING_PROBABILITY = 1.0
+BOB_RECEPTION_PROBABILITY = 0.99
+EVE_RECEPTION_PROBABILITY = 0.50
 T = 100_000
 
 THETA = 0.4
@@ -66,8 +66,8 @@ sender = Sofia_Random_Sender(
     rng=sender_rng
 )
 
-bob_channel = Channel(packet_loss=BOB_PACKET_LOSS, rng=bob_rng)
-eve_channel = Channel(packet_loss=EVE_PACKET_LOSS, rng=eve_rng)
+bob_channel = Channel(rec_probability=BOB_RECEPTION_PROBABILITY, rng=bob_rng)
+eve_channel = Channel(rec_probability=EVE_RECEPTION_PROBABILITY, rng=eve_rng)
 
 bob_decoder = HMMDecoderSofia(states=states, transition_matrix=P, theta=THETA)
 
@@ -87,8 +87,8 @@ if PRETRAINED_MODEL is None:
         P=P,
         training_runs=TRAINING_RUNS,
         T_per_run=T_PER_RUN,
-        eve_packet_loss=EVE_PACKET_LOSS,
-        bob_packet_loss=BOB_PACKET_LOSS,
+        eve_reception_probability=EVE_RECEPTION_PROBABILITY,
+        bob_reception_probability=BOB_RECEPTION_PROBABILITY,
         sender=training_sender,
     )
 
@@ -145,7 +145,7 @@ print()
 
 # Eve is passive: predict all frozen feature rows in one batch.
 eve_S = eve_decoder.predict(np.asarray(eve_feature_rows))
-print("Simulation time: ", time.perf_counter() - start)
+print(f"Simulation time: {time.perf_counter() - start:.1f} s")
 
 # Results:
 
@@ -162,17 +162,14 @@ eve_wrong = eve_S != true_S
 
 CRA = bob_correct & eve_wrong
 
-print("Bob Y accuracy:", np.mean(bob_Y == true_Y))
-print("Bob S accuracy:", np.mean(bob_S == true_S))
-print("Bob joint (Y + S) accuracy:", np.mean(bob_correct))
-print("Eve S accuracy:", np.mean(eve_S == true_S))
-print("Average CRA:", np.mean(CRA))
+print(f"Bob Y accuracy: {np.mean(bob_Y == true_Y):.1%}")
+print(f"Bob S accuracy: {np.mean(bob_S == true_S):.1%}")
+print(f"Bob joint (Y + S) accuracy: {np.mean(bob_correct):.1%}")
+print(f"Eve S accuracy: {np.mean(eve_S == true_S):.1%}")
+print(f"Average CRA: {np.mean(CRA):.1%}")
 
 # ~ is invert function. Basically, look at where Eve had no packet; 
 # What was her accuracy then (so when the RF-model actually did some work)
 hidden_mask = ~eve_had_current_packet
 if np.any(hidden_mask):
-    print(
-        "Eve S accuracy when current packet unavailable:",
-        np.mean(eve_S[hidden_mask] == true_S[hidden_mask]),
-    )
+    print(f"Eve S accuracy when current packet unavailable: {np.mean(eve_S[hidden_mask] == true_S[hidden_mask]):.1%}")
